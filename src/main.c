@@ -9,11 +9,6 @@
 #define COLUMN_EMAIL_SIZE 255
 #define size_of_attribute(Struct, Attribute) sizeof(((Struct*)0)->Attribute)
 
-typedef struct {
-    char* buffer;
-    size_t buffer_length;
-    ssize_t input_length;
-} InputBuffer;
 
 typedef enum {
     EXECUTE_SUCCESS,
@@ -27,15 +22,11 @@ typedef enum {
 
 typedef enum {
     PREPARE_SUCCESS,
+    PREPARE_NEGATIVE_ID,
+    PREPARE_STRING_TOO_LONG,
     PREPARE_SYNTAX_ERROR,
     PREPARE_UNRECOGNIZED_STATEMENT
 } PrepareResult;
-
-typedef struct {
-    uint32_t id;
-    char username[COLUMN_USERNAME_SIZE];
-    char email[COLUMN_EMAIL_SIZE];
-} Row;
 
 typedef enum {
     STATEMENT_INSERT,
@@ -43,9 +34,27 @@ typedef enum {
 } StatementType;
 
 typedef struct {
+    char* buffer;
+    size_t buffer_length;
+    ssize_t input_length;
+} InputBuffer;
+
+typedef struct {
+    uint32_t id;
+    char username[COLUMN_USERNAME_SIZE+1];
+    char email[COLUMN_EMAIL_SIZE+1];
+} Row;
+
+typedef struct {
     StatementType type;
     Row row_to_insert;  // only used on insertions
 } Statement;
+
+typedef struct  {
+    uint32_t num_rows;
+    void* pages[TABLE_MAX_PAGES];
+} Table;
+
 
 const uint32_t ID_SIZE = size_of_attribute(Row, id);
 const uint32_t USERNAME_SIZE = size_of_attribute(Row, username);
@@ -59,10 +68,6 @@ const uint32_t PAGE_SIZE = 4096;
 const uint32_t ROWS_PER_PAGE = PAGE_SIZE / ROW_SIZE;
 const uint32_t TABLE_MAX_ROWS = ROWS_PER_PAGE * TABLE_MAX_PAGES;
 
-typedef struct  {
-    uint32_t num_rows;
-    void* pages[TABLE_MAX_PAGES];
-} Table;
 
 void print_row(Row* row) {
     printf("(%d, %s, %s)\n", row->id, row->username, row->email);
@@ -120,7 +125,7 @@ InputBuffer* new_input_buffer() {
 }
 
 void print_prompt() {
-    printf("ndb > ");
+    printf("db > ");
 }
 
 void read_input(InputBuffer* input_buffer) {
@@ -150,22 +155,36 @@ MetaCommandResult do_meta_command(InputBuffer* input_buffer) {
     }
 }
 
+PrepareResult prepare_insert(InputBuffer *input_buffer, Statement* statement) {
+    statement->type = STATEMENT_INSERT;
+
+    char *keyword = strtok(input_buffer->buffer, " ");
+    char *id_string = strtok(NULL, " ");
+    char *username = strtok(NULL, " ");
+    char *email = strtok(NULL, " ");
+
+    if (id_string == NULL || username == NULL || email == NULL){
+        return PREPARE_SYNTAX_ERROR;
+    }
+
+    int id = atoi(id_string);
+    if (id < 0) {
+        return PREPARE_NEGATIVE_ID;
+    }
+    if ((strlen(username) > COLUMN_USERNAME_SIZE) || (strlen(email) > COLUMN_EMAIL_SIZE)) {
+        return PREPARE_STRING_TOO_LONG;
+    }
+    statement->row_to_insert.id = id;
+    strcpy(statement->row_to_insert.username, username);
+    strcpy(statement->row_to_insert.email, email);
+
+    return PREPARE_SUCCESS;
+
+}
+
 PrepareResult prepare_statement(InputBuffer* input_buffer, Statement* statement) {
     if (strncmp(input_buffer->buffer, "insert", 6) == 0) {
-        statement->type = STATEMENT_INSERT;
-
-        int args_assigned = sscanf(
-            input_buffer->buffer, "insert %d %s %s",
-            &(statement->row_to_insert.id),
-            statement->row_to_insert.username,
-            statement->row_to_insert.email
-        );
-
-        if (args_assigned < 3) {
-            return PREPARE_SYNTAX_ERROR;
-        }
-
-        return PREPARE_SUCCESS;
+        return prepare_insert(input_buffer, statement);
     }
     if (strcmp(input_buffer->buffer, "select") == 0) {
         statement->type = STATEMENT_SELECT;
@@ -174,7 +193,6 @@ PrepareResult prepare_statement(InputBuffer* input_buffer, Statement* statement)
 
     return PREPARE_UNRECOGNIZED_STATEMENT;
 }
-
 
 ExecuteResult execute_insert(Statement* statement, Table* table) {
     if (table->num_rows >=  TABLE_MAX_ROWS) {
@@ -226,6 +244,12 @@ int main(int argc, char* arv[]) {
         switch (prepare_statement(input_buffer, &statement)) {
             case (PREPARE_SUCCESS):
                 break;
+            case (PREPARE_NEGATIVE_ID):
+                printf("ID must be positive.\n");
+                continue;
+            case (PREPARE_STRING_TOO_LONG):
+                printf("String is too long.\n");
+                continue;
             case (PREPARE_SYNTAX_ERROR):
                 printf("Syntax error. Could not parse statement.\n");
                 continue;
