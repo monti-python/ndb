@@ -64,6 +64,12 @@ typedef struct  {
     Pager* pager;
 } Table;
 
+typedef struct {
+    Table* table;
+    uint32_t row_num;
+    bool end_of_table; // i.e. position one past the last element
+} Cursor;
+
 
 const uint32_t ID_SIZE = size_of_attribute(Row, id);
 const uint32_t USERNAME_SIZE = size_of_attribute(Row, username);
@@ -82,6 +88,32 @@ void print_row(Row* row) {
     printf("(%d, %s, %s)\n", row->id, row->username, row->email);
 }
 
+
+// Cursor stuff
+Cursor* table_start(Table* table) {
+    Cursor* cursor = malloc(sizeof(Cursor));
+    cursor->table = table;
+    cursor->row_num = 0;
+    cursor->end_of_table = (table->num_rows == 0);
+    return cursor;
+}
+
+Cursor* table_end(Table* table) {
+    Cursor* cursor = malloc(sizeof(Cursor));
+    cursor->table = table;
+    cursor->row_num = table->num_rows;
+    cursor->end_of_table = true;
+    return cursor;
+}
+
+void cursor_advance(Cursor* cursor) {
+    cursor->row_num += 1;
+    if (cursor->row_num == cursor->table->num_rows) {
+        cursor->end_of_table = true;
+    }
+}
+
+// Storage mgmt
 void serialize_row(Row* source, void* destination) {
     memcpy(destination + ID_OFFSET, &(source->id), ID_SIZE);
     strncpy(destination + USERNAME_OFFSET, source->username, USERNAME_SIZE);
@@ -123,9 +155,10 @@ void* get_page(Pager* pager, uint32_t page_num) {
     return pager->pages[page_num];
 }
 
-void* row_slot(Table* table, uint32_t row_num) {
+void* cursor_value(Cursor* cursor) {
+    uint32_t row_num = cursor->row_num;
     uint32_t page_num = row_num / ROWS_PER_PAGE;
-    void* page = get_page(table->pager, page_num);
+    void* page = get_page(cursor->table->pager, page_num);
     uint32_t row_offset = row_num % ROWS_PER_PAGE;
     uint32_t byte_offset = row_offset * ROW_SIZE;
     return page + byte_offset;
@@ -223,13 +256,12 @@ void db_close(Table* table) {
     free(table);
 }
 
-
+// Input mgmt
 InputBuffer* new_input_buffer() {
-    InputBuffer* input_buffer = (InputBuffer*)malloc(sizeof(InputBuffer));
-    input_buffer->buffer = NULL;
-    input_buffer->buffer_length = 0;
-    input_buffer->input_length = 0;
-
+    InputBuffer* input_buffer = (InputBuffer*)calloc(1, sizeof(InputBuffer));
+    // input_buffer->buffer = NULL;
+    // input_buffer->buffer_length = 0;
+    // input_buffer->input_length = 0;
     return input_buffer;
 }
 
@@ -309,17 +341,23 @@ ExecuteResult execute_insert(Statement* statement, Table* table) {
         return EXECUTE_TABLE_FULL;
     }
     Row* row_to_insert = &(statement->row_to_insert);
-    serialize_row(row_to_insert, row_slot(table, table->num_rows));
+    Cursor* cursor = table_end(table);
+    serialize_row(row_to_insert, cursor_value(cursor));
     table->num_rows += 1;
     return EXECUTE_SUCCESS;
 }
 
 ExecuteResult execute_select(Statement* statement, Table* table) {
     Row row;
+    Cursor* cursor = table_start(table);
+
     for (uint32_t i = 0; i < table->num_rows; i++) {
-        deserialize_row(row_slot(table, i), &row);
+        deserialize_row(cursor_value(cursor), &row);
         print_row(&row);
+        cursor_advance(cursor);
     }
+
+    free(cursor);
     return EXECUTE_SUCCESS;
 }
 
